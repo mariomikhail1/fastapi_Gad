@@ -1,8 +1,15 @@
 from datetime import datetime
-from typing import List, Optional
+from typing import Generator, List, Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException
+from fastapi.responses import RedirectResponse
+from sqlalchemy import select
+from sqlalchemy.orm import Session
 from pydantic import BaseModel, Field, validator
+
+from .database import Base, SessionLocal, engine
+from .models import Product
+from . import schemas as product_schemas
 
 
 app = FastAPI(
@@ -10,6 +17,34 @@ app = FastAPI(
     description="API für Produktverwaltung (Starter-Version)",
     version="0.1.0",
 )
+
+# ---------- DB dependency ----------
+@app.on_event("startup")
+def on_startup() -> None:
+    # Create tables if they don't exist yet.
+    Base.metadata.create_all(bind=engine)
+
+
+def get_db() -> Generator[Session, None, None]:
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+
+def product_to_dict(product: Product) -> dict:
+    return {
+        "id": product.id,
+        "name": product.name,
+        "description": product.description,
+        "price": product.price,
+        "category": product.category,
+        "stock": product.stock,
+        "created_at": product.created_at,
+        "updated_at": product.updated_at,
+    }
+
 
 # In-Memory Database (nur für Demo, geht beim Neustart verloren)
 products_db: list[dict] = []
@@ -67,8 +102,16 @@ async def health_check():
     return {"status": "ok"}
 
 
-@app.post("/products/", response_model=ProductResponse, status_code=201)
-async def create_product(product: ProductCreate):
+@app.get("/", include_in_schema=False)
+async def root_redirect():
+    # Allow opening the API in a browser via `/` by redirecting to Swagger UI.
+    return RedirectResponse(url="/docs")
+
+
+@app.post("/products/", response_model=product_schemas.ProductRead, status_code=201)
+async def create_product(
+    product: product_schemas.ProductCreate, db: Session = Depends(get_db)
+):
     """
     Erstellt ein neues Produkt.
 
@@ -77,29 +120,27 @@ async def create_product(product: ProductCreate):
     - **price**: Preis in Euro (required, > 0)
     - **category**: Kategorie (required)
     """
-    product_dict = product.dict()
-    new_id = len(products_db) + 1
     now = datetime.utcnow()
 
-    product_dict.update(
-        {
-            "id": new_id,
-            "created_at": now,
-            "updated_at": now,
-        }
-    )
+    db_product = Product(**product.model_dump())
+    db_product.created_at = now
+    db_product.updated_at = now
 
-    products_db.append(product_dict)
-    return product_dict
+    db.add(db_product)
+    db.commit()
+    db.refresh(db_product)
+
+    return product_to_dict(db_product)
 
 
-@app.get("/products/", response_model=List[ProductResponse])
+@app.get("/products/", response_model=List[product_schemas.ProductRead])
 async def get_products(
     skip: int = 0,
     limit: int = 10,
     category: Optional[str] = None,
     min_price: Optional[float] = None,
     max_price: Optional[float] = None,
+    db: Session = Depends(get_db),
 ):
     """
     Gibt eine Liste von Produkten zurück.
@@ -110,61 +151,80 @@ async def get_products(
             detail="min_price darf nicht größer als max_price sein",
         )
 
-    items = products_db
+    stmt = select(Product)
 
     if category is not None:
-        items = [p for p in items if p["category"] == category]
+        stmt = stmt.where(Product.category == category)
 
     if min_price is not None:
-        items = [p for p in items if p["price"] >= min_price]
+        stmt = stmt.where(Product.price >= min_price)
 
     if max_price is not None:
-        items = [p for p in items if p["price"] <= max_price]
+        stmt = stmt.where(Product.price <= max_price)
 
-    return items[skip : skip + limit]
+    stmt = stmt.offset(skip).limit(limit)
+
+    products = db.execute(stmt).scalars().all()
+    return [product_to_dict(p) for p in products]
 
 
-@app.get("/products/{product_id}", response_model=ProductResponse)
-async def get_product(product_id: int):
+@app.get("/products/{product_id}", response_model=product_schemas.ProductRead)
+async def get_product(product_id: int, db: Session = Depends(get_db)):
     """
     Gibt ein spezifisches Produkt zurück.
     """
-    product = next((p for p in products_db if p["id"] == product_id), None)
+    product = db.get(Product, product_id)
     if product is None:
         raise HTTPException(status_code=404, detail="Produkt nicht gefunden")
-    return product
+    return product_to_dict(product)
 
 
-@app.put("/products/{product_id}", response_model=ProductResponse)
-async def update_product(product_id: int, product_update: ProductUpdate):
+@app.put("/products/{product_id}", response_model=product_schemas.ProductRead)
+async def update_product(
+    product_id: int,
+    product_update: product_schemas.ProductUpdate,
+    db: Session = Depends(get_db),
+):
     """
     Aktualisiert ein bestehendes Produkt.
     """
-    product_index = next(
-        (i for i, p in enumerate(products_db) if p["id"] == product_id), None
-    )
-    if product_index is None:
+    product = db.get(Product, product_id)
+    if product is None:
         raise HTTPException(status_code=404, detail="Produkt nicht gefunden")
 
-    update_data = product_update.dict(exclude_unset=True)
+    update_data = product_update.model_dump(exclude_unset=True)
+    for field, value in update_data.items():
+        setattr(product, field, value)
 
-    products_db[product_index].update(update_data)
-    products_db[product_index]["updated_at"] = datetime.utcnow()
+    product.updated_at = datetime.utcnow()
+    db.add(product)
+    db.commit()
+    db.refresh(product)
 
-    return products_db[product_index]
+    return product_to_dict(product)
 
 
 @app.delete("/products/{product_id}", status_code=204)
-async def delete_product(product_id: int):
+async def delete_product(product_id: int, db: Session = Depends(get_db)):
     """
     Löscht ein Produkt.
     """
-    product_index = next(
-        (i for i, p in enumerate(products_db) if p["id"] == product_id), None
-    )
-    if product_index is None:
+    product = db.get(Product, product_id)
+    if product is None:
         raise HTTPException(status_code=404, detail="Produkt nicht gefunden")
 
-    products_db.pop(product_index)
+    db.delete(product)
+    db.commit()
     return None
+
+
+if __name__ == "__main__":
+    import uvicorn
+
+    # When starting via `python app/main.py`, uvicorn's `reload=True` spawns a
+    # subprocess where the import path can differ and lead to
+    # `ModuleNotFoundError: No module named 'app'`.
+    # For local development, use `uvicorn app.main:app --reload` from the
+    # project root instead.
+    uvicorn.run(app, host="127.0.0.1", port=8000, reload=False)
 
