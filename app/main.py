@@ -47,7 +47,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
+    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -61,14 +61,20 @@ def on_startup() -> None:
     try:
         seed_username = "test@test.com"
         seed_password = "test"
-        if not get_user_by_username(db, seed_username):
+        existing_user = get_user_by_username(db, seed_username)
+        if existing_user:
+            # Keep test credentials deterministic for teacher/demo login.
+            existing_user.hashed_password = get_password_hash(seed_password)
+            existing_user.is_active = True
+            db.add(existing_user)
+        else:
             seed_user = models.User(
                 username=seed_username,
                 hashed_password=get_password_hash(seed_password),
                 is_active=True,
             )
             db.add(seed_user)
-            db.commit()
+        db.commit()
     finally:
         db.close()
 

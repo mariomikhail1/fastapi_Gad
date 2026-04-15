@@ -4,3 +4,4 @@ __pycache__/
 products.db
 frontend/node_modules/
 frontend/dist/
+frontend/*.tsbuildinfo

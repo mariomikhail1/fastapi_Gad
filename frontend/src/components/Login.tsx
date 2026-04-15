@@ -18,19 +18,45 @@ export default function Login() {
     setError(null);
     setLoading(true);
 
-    try {
+    const makeForm = () => {
       const formData = new URLSearchParams();
-      formData.append("username", username);
+      formData.append("username", username.trim());
       formData.append("password", password);
+      return formData;
+    };
 
-      const response = await api.post("/token", formData, {
+    try {
+      const response = await api.post("/token", makeForm(), {
         headers: { "Content-Type": "application/x-www-form-urlencoded" },
       });
 
       login(response.data.access_token);
       navigate("/products", { replace: true });
-    } catch {
-      setError("Login fehlgeschlagen. Prüfe Username/Passwort.");
+    } catch (err: any) {
+      // If user does not exist yet, create and retry once.
+      if (err?.response?.status === 401) {
+        try {
+          await api.post("/users/", {
+            username: username.trim(),
+            password,
+          });
+
+          const retry = await api.post("/token", makeForm(), {
+            headers: {
+              "Content-Type": "application/x-www-form-urlencoded",
+            },
+          });
+          login(retry.data.access_token);
+          navigate("/products", { replace: true });
+          return;
+        } catch {
+          // fall through to standard error below
+        }
+      }
+
+      setError(
+        "Login fehlgeschlagen. Prüfe Username/Passwort oder ob das Backend läuft."
+      );
     } finally {
       setLoading(false);
     }
