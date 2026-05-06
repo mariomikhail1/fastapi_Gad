@@ -32,7 +32,6 @@ const bioKarotten500g: Produkt = {
 
 // Intentionally wrong id type for the course screenshot (VS Code red underline)
 const fehlerhaftesProdukt: Produkt = {
-  // @ts-expect-error - used for teaching the TypeScript error
   id: "abc",
   name: "Fehlerhaftes Produkt",
   preis: 1.49,
