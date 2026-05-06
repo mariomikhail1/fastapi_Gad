@@ -4,6 +4,7 @@ import { ReactElement } from "react";
 import { AuthProvider, useAuth } from "./AuthContext";
 import Login from "./components/Login";
 import ProductList from "./components/ProductList";
+import TypeScriptDemoProducts from "./components/TypeScriptDemoProducts";
 
 const ProtectedRoute = ({ children }: { children: ReactElement }) => {
   const { token } = useAuth();
@@ -16,6 +17,7 @@ export default function App() {
     <AuthProvider>
       <BrowserRouter>
         <Routes>
+          <Route path="/" element={<TypeScriptDemoProducts />} />
           <Route path="/login" element={<Login />} />
           <Route
             path="/products"
@@ -25,7 +27,7 @@ export default function App() {
               </ProtectedRoute>
             }
           />
-          <Route path="*" element={<Navigate to="/products" replace />} />
+          <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </BrowserRouter>
     </AuthProvider>
